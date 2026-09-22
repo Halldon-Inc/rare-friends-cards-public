@@ -1,0 +1,13 @@
+node_modules
+.next
+.env*.local
+.vercel
+tsconfig.tsbuildinfo
+audit/**/shots/
+audit/**/verify/png/
+audit/**/verify/shots/
+audit/**/verify/data/
+audit/memes-shots/
+audit/memes-dev.log
+audit/
+HANDOFF.md

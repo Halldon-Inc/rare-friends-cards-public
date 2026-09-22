@@ -1,0 +1,3 @@
+Silkscreen (Jason Kottke) and Sometype Mono (Dharma Type) are distributed under the SIL Open Font License 1.1
+via Google Fonts. Bundled here so card rendering does not depend on Google Fonts at runtime.
+https://openfontlicense.org
