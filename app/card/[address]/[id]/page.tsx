@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { decodeParam, resolveInput, fetchState, claimableUsd, nextRewardUsd, friendShare, friendWeight, friendLabel, friendTitle, walletBalances, findFriend, friendSlug, displayName, walletSlug } from "@/lib/rarefriends";
+import { decodeParam, resolveInput, fetchState, claimableUsd, nextRewardUsd, friendShare, friendWeight, friendLabel, friendTitle, walletBalances, findFriend, friendSlug, displayName, walletSlug, withFriendArtwork } from "@/lib/rarefriends";
 import { usd, num, sharePct } from "@/lib/format";
 import { baseUrl } from "@/lib/site";
 import { CopyLink } from "@/components/CopyLink";
 import { DownloadCard } from "@/components/DownloadCard";
+import { CardZoom } from "@/components/CardZoom";
 import { Problem } from "@/components/Problem";
 import { renderCardPng } from "@/lib/render";
 import { FriendCard, FRIEND_W, FRIEND_H } from "@/components/cards/FriendCard";
@@ -56,8 +57,10 @@ export default async function Page({ params }: P) {
   if (!/^(?:(?:genesis|gen|generations)-)?\d+$/i.test(id)) return <Problem title="Friend not found" body={`"${id}" isn't a Friend id.`} />;
   const s = await fetchState(addr);
   if (!s) return <Problem title="Rare Friends data unavailable" body="rarefriends.com didn't answer, or its price feed is down. Try again in a minute." />;
-  const f = findFriend(s, id);
-  if (!f) return <Problem title="Friend not found" body={`#${id} isn't in ${name}.`} />;
+  const found = findFriend(s, id);
+  if (!found) return <Problem title="Friend not found" body={`#${id} isn't in ${name}.`} />;
+  // The wallet read attaches portraits to the first 40 Friends only; this page wants its own Friend's regardless.
+  const f = await withFriendArtwork(found);
   const slug = walletSlug(raw, addr);
   const link = `${baseUrl()}/card/${slug}/${friendSlug(s, f)}`;
   // Rendered here from the same snapshot as the strip below and embedded inline, so the two cannot disagree.
@@ -73,8 +76,10 @@ export default async function Page({ params }: P) {
       </header>
 
       <section className="cardblock">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img className="card" src={png} alt={`Card for ${friendTitle(f)}`} width={1200} height={630} />
+        <CardZoom label={`Open the card for ${friendTitle(f)} full size`}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img className="card" src={png} alt={`Card for ${friendTitle(f)}`} width={1200} height={630} />
+        </CardZoom>
         <div className="actions">
           <CopyLink url={link} />
           <DownloadCard filename={`rarefriends-${friendLabel(f).toLowerCase()}-${f.id}.png`} />

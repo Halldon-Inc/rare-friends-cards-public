@@ -1,4 +1,4 @@
-import { decodeParam, resolveInput, fetchState, findFriend, displayName } from "@/lib/rarefriends";
+import { decodeParam, resolveInput, fetchState, findFriend, displayName, withFriendArtwork } from "@/lib/rarefriends";
 import { renderCard } from "@/lib/render";
 import { FriendCard, FRIEND_W, FRIEND_H } from "@/components/cards/FriendCard";
 
@@ -17,5 +17,5 @@ export async function GET(_: Request, { params }: { params: Promise<{ address: s
   if (!s) return new Response("Rare Friends data unavailable", { status: 502, headers: NO_STORE });
   const f = findFriend(s, id);
   if (!f) return new Response("That Friend is not in this wallet", { status: 404, headers: NO_STORE });
-  return renderCard(<FriendCard s={s} f={f} name={displayName(raw, addr)} />, FRIEND_W, FRIEND_H);
+  return renderCard(<FriendCard s={s} f={await withFriendArtwork(f)} name={displayName(raw, addr)} />, FRIEND_W, FRIEND_H);
 }

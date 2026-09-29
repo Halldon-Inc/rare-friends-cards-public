@@ -5,6 +5,7 @@ import { usd, num, pct, apyPct } from "@/lib/format";
 import { baseUrl } from "@/lib/site";
 import { CopyLink } from "@/components/CopyLink";
 import { DownloadCard } from "@/components/DownloadCard";
+import { CardZoom } from "@/components/CardZoom";
 import { Problem } from "@/components/Problem";
 import { renderCardPng } from "@/lib/render";
 import { PortfolioCard, PORTFOLIO_W, PORTFOLIO_H } from "@/components/cards/PortfolioCard";
@@ -75,7 +76,7 @@ export default async function Page({ params }: P) {
         <div className="cell"><span className="lbl"><i className="dot fill" />Earning</span><b>{num(p.earning.length)}</b></div>
         <div className="cell"><span className="lbl">Claimable</span><b>{usd(p.claimUsd)}</b><small>{num(p.claimRf, 2)} RF + {num(p.claimWeth, 5)} WETH</small></div>
         <div className="cell"><span className="lbl">Pending</span><b>{usd(p.pendingUsd)}</b><small>live estimate weight-based</small></div>
-        <div className="cell dark"><span className="lbl">Your APR</span><b>{p.apy != null ? apyPct(p.apy) : "—"}</b><small>{p.apy != null ? "current active stream ÷ RF you paid to activate · annualized" : `no RF paid to activate · protocol APR ${protoApy > 0 ? pct(protoApy, 0) : "—"}`}</small></div>
+        <div className="cell dark"><span className="lbl">Your APR</span><b>{p.apy != null ? apyPct(p.apy) : "—"}</b><small>{p.apy != null ? "current active stream ÷ RF you paid to activate · annualized" : s.activationPaidUnknown ? "activation history unavailable right now" : `no RF paid to activate · protocol APR ${protoApy > 0 ? pct(protoApy, 0) : "—"}`}</small></div>
       </section>
 
       <section className="cardblock">
@@ -83,8 +84,10 @@ export default async function Page({ params }: P) {
           <h2 className="px">ALL FRIENDS</h2>
           <span className="muted">one card · {num(p.friends.length)} {p.friends.length === 1 ? "friend" : "friends"}</span>
         </div>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img className="card" src={png} alt={`Portfolio card for ${name}`} width={1200} height={630} />
+        <CardZoom label={`Open the portfolio card for ${name} full size`}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img className="card" src={png} alt={`Portfolio card for ${name}`} width={1200} height={630} />
+        </CardZoom>
         <div className="actions">
           <CopyLink url={link} />
           <DownloadCard filename={`rarefriends-portfolio-${fileTag}.png`} />

@@ -14,7 +14,7 @@ export default function Home() {
         <div className="door door-memes">
           <span className="lbl">02 · meme machine</span>
           <h2 className="px">MEME<br />MACHINE</h2>
-          <p className="tag">Drop your PFP or pull a Friend from your wallet. Drake, distracted boyfriend, two buttons, Gru’s plan, trade offer, expanding brain, surprised Pikachu and sixteen more, with your Friend pasted in. Made in your browser, nothing uploaded.</p>
+          <p className="tag"><span className="on-mouse">Drop your PFP</span><span className="on-touch">Choose a photo</span> or pull a Friend from your wallet. Drake, distracted boyfriend, two buttons, Gru’s plan, trade offer, expanding brain, surprised Pikachu and sixteen more, with your Friend pasted in. Made in your browser, nothing uploaded.</p>
           <div className="doorstrip" aria-hidden>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <span className="doortile"><img src="/memes/drake.jpg" alt="" /><small>drake</small></span>

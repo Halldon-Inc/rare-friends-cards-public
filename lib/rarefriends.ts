@@ -4,10 +4,11 @@ import { normalize } from "viem/ens";
 import { cache } from "react";
 import { unstable_cache } from "next/cache";
 import { after } from "next/server";
+import { assembleState, errText, friendArtwork, newTrace } from "./upstream";
 
-export const SITE = "https://rarefriends.com";
-export const STATE_API = `${SITE}/api/protocol/state`;
-const UA = "rare-friends-cards/1.0 (+https://rare-friends-cards.vercel.app)";
+// The data is assembled from rarefriends.com's remaining public routes plus Robinhood Chain reads: lib/upstream.ts says
+// why (their per-wallet state endpoint was retired on 2026-09-25) and lists every route and address involved.
+export { SITE, SNAPSHOT_API, OWNED_API } from "./upstream";
 
 export type Token = { symbol?: string; balance?: number; usd?: number; [k: string]: unknown };
 export type Friend = {
@@ -38,6 +39,8 @@ export type State = {
   rewardAccounting?: string;
   rewardCredit?: number;
   rewardCreditWeth?: number;
+  /** True when the activation history could not be read this time: Your APR is unknown, which is not "no RF paid". */
+  activationPaidUnknown?: boolean;
   streams: Stream[];
   weekly: Weekly[];
   holderWeekly: Weekly[];
@@ -156,43 +159,52 @@ const SHARED_S = 30;
 type Raw = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 type Read = { json: Raw | null; hung: boolean };
 
+/** The shared 30 s snapshot: everyone asking for the same wallet inside the window gets one identical read (Next's Data Cache, which survives deploys). A failed assembly throws and is never stored. */
+const sharedState = unstable_cache(async (address: string) => assembleState(address, 8_000), ["rf-state-v3"], { revalidate: SHARED_S });
+
 /**
- * One upstream read. `shared` goes through Next's Data Cache (30 s, stale-while-revalidate, only 200s are stored, a
- * failed refresh never evicts good data); `!shared` bypasses every cache. Both are validated to the economy shape.
+ * One upstream read: the state assembled in lib/upstream.ts from their snapshot and owned-nfts routes plus chain
+ * reads. `shared` goes through Next's Data Cache (30 s); `!shared` reads everything fresh. Both are validated to
+ * the economy shape below.
  */
 async function readState(address: string, shared: boolean, timeoutMs: number): Promise<Read> {
-  let res: Response;
-  try {
-    res = await fetch(`${STATE_API}?address=${address.toLowerCase()}`, {
-      ...(shared ? { next: { revalidate: SHARED_S } } : { cache: "no-store" }),
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: { "User-Agent": UA, accept: "application/json" },
-    });
-  } catch (e) {
-    return { json: null, hung: (e as { name?: string })?.name === "TimeoutError" };
-  }
-  if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) return { json: null, hung: false };
+  const t0 = Date.now();
+  const stage = shared ? "read-shared" : "read-fresh";
   let json: unknown;
   try {
-    json = await res.json();
-  } catch {
+    json = shared ? await sharedState(address.toLowerCase()) : await assembleState(address, timeoutMs);
+  } catch (e) {
+    console.warn(JSON.stringify({ tag: "rf-state", wallet: address, stage, ok: false, ms: Date.now() - t0, error: errText(e) }));
+    return { json: null, hung: (e as { name?: string })?.name === "TimeoutError" };
+  }
+  const why = refusal(json);
+  if (why) {
+    console.warn(JSON.stringify({ tag: "rf-state", wallet: address, stage, ok: false, ms: Date.now() - t0, refusal: why }));
     return { json: null, hung: false };
   }
-  if (!json || typeof json !== "object") return { json: null, hung: false };
+  return { json: json as Raw, hung: false };
+}
+
+/**
+ * Why an assembled state must not be rendered, or null when it is fine. Each branch is a guard the cards rely on;
+ * the reason is logged and returned by /api/diag/state so a refusal is never silent.
+ */
+export function refusal(json: unknown): string | null {
+  if (!json || typeof json !== "object") return `not an object (${json === null ? "null" : typeof json})`;
   const j = json as Raw;
-  // Shape (re-verified 2026-09-19, after the route moved from /api/postlaunch/state to /api/protocol/state):
-  //   { account: {...friends, claimed, claimedWeth, activationPaid, activity: [], rewardAccounting, rewardCredit,
-  //   rewardCreditWeth}, protocol: { metrics, streams, weekly, holderWeekly, prices, reserve, coverage, marketReady },
-  //   blockNumber, timestamp }. `mode` is no longer sent; the guard stays as a net in case it returns, because in
-  //   "genesis-only" mode the Friends have a different shape and must be refused.
-  if (j.mode && j.mode !== "economy") return { json: null, hung: false };
+  // Shape (the retired endpoint's, rebuilt by lib/upstream.ts):
+  //   { account: {...friends, activationPaid, activationPaidUnknown, activity: [], rewardAccounting},
+  //   protocol: { metrics, streams, weekly, holderWeekly, prices }, blockNumber, timestamp }. The `mode` guard stays
+  //   as a net: in the old "genesis-only" mode the Friends had a different shape and had to be refused.
+  if (j.mode && j.mode !== "economy") return `mode is ${String(j.mode).slice(0, 40)}, not economy`;
   const acct = j.account ?? j;
   const proto = j.protocol ?? j ?? {};
-  if (!acct || !Array.isArray(acct.friends)) return { json: null, hung: false };
+  if (!acct || !Array.isArray(acct.friends)) return "no friends array";
   const prices = acct.prices ?? proto.prices ?? {};
   const metrics = acct.metrics ?? proto.metrics ?? {};
   // Missing prices or weights would make every number a confident zero; the site shows dashes then, we refuse.
-  if (!(n(prices.rfUsd) > 0) || !(n(prices.ethUsd) > 0) || !(n(metrics.genesisWeight) + n(metrics.generationsWeight) > 0)) return { json: null, hung: false };
+  if (!(n(prices.rfUsd) > 0) || !(n(prices.ethUsd) > 0) || !(n(metrics.genesisWeight) + n(metrics.generationsWeight) > 0))
+    return `prices or weights missing (rfUsd ${prices.rfUsd}, ethUsd ${prices.ethUsd}, genesisWeight ${metrics.genesisWeight}, generationsWeight ${metrics.generationsWeight})`;
   // Upstream invariant, read from their source (rarefriends-web-public src/server/protocol/state.ts readFriend):
   // `weight` is always a number, and a Friend is only `activated` when its weight is above zero. So an
   // activated + hardwired Friend without weight cannot happen. Their CLIENT still carries a fallback that recomputes
@@ -200,8 +212,9 @@ async function readState(address: string, shared: boolean, timeoutMs: number): P
   // We deliberately do NOT copy those tables: a stale local copy of a protocol constant would print a confidently
   // wrong number, which is worse than showing none. If the invariant ever breaks, refuse the snapshot instead of
   // rendering 0 weight and 0% share on a card somebody screenshots.
-  if (acct.friends.some((f: Raw) => f && f.activated && f.hardwired && !(n(f.weight) > 0))) return { json: null, hung: false };
-  return { json: j, hung: false };
+  const weightless = acct.friends.find((f: Raw) => f && f.activated && f.hardwired && !(n(f.weight) > 0));
+  if (weightless) return `activated hardwired Friend without weight (${weightless.collection} #${weightless.id})`;
+  return null;
 }
 
 const ageMs = (j: Raw) => (typeof j.timestamp === "number" ? Date.now() - j.timestamp : Infinity);
@@ -255,8 +268,49 @@ export const fetchState = cache(async (address: string): Promise<State | null> =
     return build(fresh.json, false);
   }
   const fallback = [held, shared.json].filter((x): x is Raw => !!x).sort((a, b) => ageMs(a) - ageMs(b))[0];
+  console.warn(JSON.stringify({ tag: "rf-state", wallet: address, stage: "fetch", ok: false, outcome: fallback ? `cached copy, ${Math.round(ageMs(fallback) / 1000)} s old` : "data unavailable", sharedHung: shared.hung, freshHung: fresh.hung }));
   return fallback ? build(fallback, true) : null;
 });
+
+/**
+ * For /api/diag/state: one fresh assembly (no cache of any kind in front of it) with every stage timed, the refusal
+ * reason if the cards would refuse it, and what the shared Data Cache entry would hand a card right now. No secrets:
+ * hosts only, never RPC URLs, and only the wallet asked about.
+ */
+export async function diagnoseState(address: string) {
+  const trace = newTrace(address);
+  let fresh: Raw | null = null;
+  let error: string | null = null;
+  try {
+    fresh = await assembleState(address, 8_000, trace);
+  } catch (e) {
+    error = errText(e);
+  }
+  const totalMs = Date.now() - trace.started;
+  const why = fresh ? refusal(fresh) : null;
+  const acct = fresh?.account ?? {};
+  let shared: Raw;
+  const t0 = Date.now();
+  try {
+    const j = await sharedState(address.toLowerCase());
+    shared = { ms: Date.now() - t0, refusal: refusal(j), ageSeconds: Math.round(ageMs(j) / 1000), friends: Array.isArray(j?.account?.friends) ? j.account.friends.length : null, activationPaidUnknown: j?.account?.activationPaidUnknown ?? null, blockNumber: j?.blockNumber ?? null };
+  } catch (e) {
+    shared = { ms: Date.now() - t0, error: errText(e) };
+  }
+  return {
+    address,
+    ok: !!fresh && !why,
+    totalMs,
+    error,
+    refusal: why,
+    result: fresh
+      ? { friends: Array.isArray(acct.friends) ? acct.friends.length : null, activationPaid: acct.activationPaid ?? null, activationPaidUnknown: acct.activationPaidUnknown ?? null, portraits: Array.isArray(acct.friends) ? acct.friends.filter((f: Raw) => f?.imageUrl).length : null, blockNumber: fresh.blockNumber ?? null, prices: fresh.protocol?.prices ?? null }
+      : null,
+    shared,
+    runtime: { node: process.version, region: process.env.VERCEL_REGION ?? null, deployment: process.env.VERCEL_DEPLOYMENT_ID ?? null, privateRpcConfigured: !!process.env.ROBINHOOD_RPC_URL },
+    events: trace.events,
+  };
+}
 
 function build(j: Raw, cached: boolean): State {
   const acct = j.account ?? j;
@@ -292,6 +346,13 @@ function build(j: Raw, cached: boolean): State {
 export function blockStamp(s: State) {
   const block = s.blockNumber ? `block ${s.blockNumber}` : "";
   return [s.cached ? "cached copy" : "rarefriends.com", block].filter(Boolean).join(" · ");
+}
+
+/** A Friend with its portrait filled in: the wallet read attaches art to the first 40 Friends only, a single-Friend page wants its own. */
+export async function withFriendArtwork(f: Friend): Promise<Friend> {
+  if (f.imageUrl || (f.collection !== "Genesis" && f.collection !== "Generations")) return f;
+  const imageUrl = await friendArtwork(f.collection, f.id);
+  return imageUrl ? { ...f, imageUrl } : f;
 }
 
 // ===== derived numbers, the site's own formulas =====

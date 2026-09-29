@@ -46,11 +46,12 @@ export function PortfolioCard({ s, name }: { s: State; name?: string }) {
     monoW(`Friend wallets ${usd(p.walletUsd)}`, 14),
   ));
   const { tiles, extra } = planTiles(p.friends, BAND_INNER - BAND_GAP - summaryW);
-  // Your APR is null only when nothing was paid to activate; the site shows a dash there, so do we, with the
-  // protocol-wide rate in the small print for context (that is the figure on rarefriends.com's home page).
+  // Your APR is null when nothing was paid to activate (the site shows a dash there, so do we, with the protocol-wide
+  // rate in the small print for context) or when the activation history could not be read this time: then the small
+  // print says so rather than claiming nothing was paid.
   const protoApy = s.metrics?.rewardApy ?? 0;
   const apyText = p.apy != null ? apyPct(p.apy) : "—";
-  const apySub = p.apy != null ? "current active stream ÷ RF you paid to activate" : `no RF paid to activate · protocol APR ${protoApy > 0 ? pct(protoApy, 0) : "—"}`;
+  const apySub = p.apy != null ? "current active stream ÷ RF you paid to activate" : s.activationPaidUnknown ? "activation history unavailable right now" : `no RF paid to activate · protocol APR ${protoApy > 0 ? pct(protoApy, 0) : "—"}`;
   const claim = usd(p.claimUsd);
   const pending = usd(p.pendingUsd);
 
@@ -103,7 +104,8 @@ export function PortfolioCard({ s, name }: { s: State; name?: string }) {
         <Box style={{ gap: 24 }}>
           <Foot label="rewards to pay" value={usd(s.metrics?.streamRemainingUsd ?? 0, 0)} />
           <Foot label="this week's budget" value={`${compact(p.rfBudget)} RF · ${eth(p.wethBudget)} WETH`} />
-          <Foot label="claimed to date" value={usd(p.claimedUsd)} />
+          {/* Lifetime "claimed to date" left with the retired state endpoint (nothing public carries it per wallet); the APR denominator is the honest replacement. */}
+          <Foot label="paid to activate" value={s.activationPaidUnknown ? "—" : `${num(p.paid)} RF`} />
         </Box>
         <div style={{ display: "flex", fontSize: 13 }}>{blockStamp(s)}</div>
       </Box>

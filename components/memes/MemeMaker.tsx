@@ -202,8 +202,9 @@ export function MemeMaker() {
     if (!c) return;
     setBusy(tpl.id);
     try {
-      const blob = await blobOf(c);
-      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      // The blob goes in as a promise so write() is called inside the tap: Safari refuses a clipboard write that
+      // starts after an await.
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blobOf(c) })]);
       flash("copied · paste it anywhere");
     } catch {
       flash("copy not supported here · use download");
@@ -240,13 +241,17 @@ export function MemeMaker() {
           role="button"
           tabIndex={0}
           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") fileRef.current?.click(); }}
-          aria-label="Drop, paste or choose an image"
+          aria-label="Choose an image (or drop or paste one)"
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           {sourceUrl ? <img src={sourceUrl} alt="" className="dropimg" /> : <span className="dropimg" />}
           <div className="droptext">
-            <b>{raw ? raw.label : "drop your PFP here"}</b>
-            <small>{raw ? "drop, paste or click to swap it" : "drag it in · paste it (ctrl+v) · or click to choose"}</small>
+            {/* Both phrasings render; CSS shows the mouse one or the touch one by pointer type, so hydration never differs. */}
+            <b>{raw ? raw.label : <><span className="on-mouse">drop your PFP here</span><span className="on-touch">choose your PFP</span></>}</b>
+            <small>
+              <span className="on-mouse">{raw ? "drop, paste or click to swap it" : "drag it in · paste it (ctrl+v) · or click to choose"}</span>
+              <span className="on-touch">{raw ? "tap to swap it" : "tap to choose a photo"}</span>
+            </small>
           </div>
           <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void useBlob(f, f.name); e.target.value = ""; }} />
         </div>
@@ -300,7 +305,7 @@ export function MemeMaker() {
             <div className="memeactions">
               <button className="btn primary" type="button" disabled={busy === tpl.id} onClick={() => void download(tpl)}>[ download ]</button>
               <button className="btn" type="button" disabled={busy === tpl.id} onClick={() => void copy(tpl)}>[ copy ]</button>
-              {tpl.bank ? <button className="btn" type="button" onClick={() => shuffle(tpl)} aria-label={`shuffle ${tpl.name} captions`}>[ ⟳ ]</button> : null}
+              {tpl.bank ? <button className="btn" type="button" onClick={() => shuffle(tpl)} aria-label={`shuffle ${tpl.name} captions`}><span>[ ⟳<span className="shufword"> shuffle</span> ]</span></button> : null}
             </div>
           </article>
         ))}

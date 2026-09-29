@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { MemeMaker } from "@/components/memes/MemeMaker";
 
-const DESCRIPTION = "Drop your PFP or pick one of your Rare Friends. Twenty-three meme templates you already know, with your Friend in the frame. Drawn in your browser, nothing uploaded.";
+const DESCRIPTION = "Drop your PFP or pick one of your Rare Friends. Thirty-three meme templates you already know, with your Friend in the frame. Drawn in your browser, nothing uploaded.";
 
 export const metadata: Metadata = {
   title: "Meme Machine · Rare Friends Cards",
@@ -16,9 +16,9 @@ export default function MemesPage() {
     <main className="wrap wide" id="main">
       <header className="pagehead">
         <h1 className="px">MEME MACHINE</h1>
-        <div className="chip">[ 23 formats · all gens ]</div>
+        <div className="chip">[ 33 formats · all gens ]</div>
       </header>
-      <p className="tag">Drop your PFP, paste it, or pull a Friend straight from your wallet. Every meme is assembled in your browser. Edit the captions, shuffle them, download or copy.</p>
+      <p className="tag"><span className="on-mouse">Drop your PFP, paste it, or pull a Friend straight from your wallet.</span><span className="on-touch">Choose a photo or pull a Friend straight from your wallet.</span> Every meme is assembled in your browser. Edit the captions, shuffle them, download or copy.</p>
       <MemeMaker />
       <p className="foot muted">Nothing is uploaded; the image never leaves your browser. Not affiliated with Rare Friends.</p>
     </main>
