@@ -13,7 +13,8 @@ export async function GET(_: Request, { params }: { params: Promise<{ address: s
   const addr = await resolveInput(raw);
   if (addr === "ens-unavailable") return new Response("ENS lookup unavailable, try again shortly", { status: 503, headers: NO_STORE });
   if (!addr) return new Response("Not a wallet address or ENS name", { status: 404, headers: NO_STORE });
-  const s = await fetchState(addr);
+  // Waits a little for a cold wallet's activation history so the preview shows its APR, and never long: scrapers give up.
+  const s = await fetchState(addr, 6_000);
   if (!s) return new Response("Rare Friends data unavailable", { status: 502, headers: NO_STORE });
-  return renderCard(<PortfolioCard s={s} name={displayName(raw, addr)} />, PORTFOLIO_W, PORTFOLIO_H);
+  return renderCard(<PortfolioCard s={s} name={displayName(raw, addr)} />, PORTFOLIO_W, PORTFOLIO_H, s.activationPaidUnknown ? 15 : 120);
 }

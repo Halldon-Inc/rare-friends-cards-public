@@ -6,6 +6,7 @@ import { baseUrl } from "@/lib/site";
 import { CopyLink } from "@/components/CopyLink";
 import { DownloadCard } from "@/components/DownloadCard";
 import { CardZoom } from "@/components/CardZoom";
+import { HistoryRetry } from "@/components/HistoryRetry";
 import { Problem } from "@/components/Problem";
 import { renderCardPng } from "@/lib/render";
 import { PortfolioCard, PORTFOLIO_W, PORTFOLIO_H } from "@/components/cards/PortfolioCard";
@@ -45,7 +46,8 @@ export default async function Page({ params }: P) {
   const addr = await resolveInput(raw);
   if (addr === "ens-unavailable") return <Problem title="ENS lookup is down" body="Couldn't reach an Ethereum RPC to resolve that name. Paste the 0x address instead, or try again in a minute." />;
   if (!addr) return <Problem title="Not a wallet address" body={`"${raw}" isn't a 0x address or an ENS name that resolves.`} />;
-  const s = await fetchState(addr);
+  // A cold wallet's activation history can outlast the first read: wait for it (bounded) so the first view has its APR.
+  const s = await fetchState(addr, 13_000);
   if (!s) return <Problem title="Rare Friends data unavailable" body="rarefriends.com didn't answer, or its price feed is down. Try again in a minute." />;
   const p = portfolio(s);
   const base = baseUrl();
@@ -76,7 +78,7 @@ export default async function Page({ params }: P) {
         <div className="cell"><span className="lbl"><i className="dot fill" />Earning</span><b>{num(p.earning.length)}</b></div>
         <div className="cell"><span className="lbl">Claimable</span><b>{usd(p.claimUsd)}</b><small>{num(p.claimRf, 2)} RF + {num(p.claimWeth, 5)} WETH</small></div>
         <div className="cell"><span className="lbl">Pending</span><b>{usd(p.pendingUsd)}</b><small>live estimate weight-based</small></div>
-        <div className="cell dark"><span className="lbl">Your APR</span><b>{p.apy != null ? apyPct(p.apy) : "—"}</b><small>{p.apy != null ? "current active stream ÷ RF you paid to activate · annualized" : s.activationPaidUnknown ? "activation history unavailable right now" : `no RF paid to activate · protocol APR ${protoApy > 0 ? pct(protoApy, 0) : "—"}`}</small></div>
+        <div className="cell dark"><span className="lbl">Your APR</span><b>{p.apy != null ? apyPct(p.apy) : "—"}</b><small>{p.apy != null ? "current active stream ÷ RF you paid to activate · annualized" : s.activationPaidUnknown ? <HistoryRetry /> : `no RF paid to activate · protocol APR ${protoApy > 0 ? pct(protoApy, 0) : "—"}`}</small></div>
       </section>
 
       <section className="cardblock">

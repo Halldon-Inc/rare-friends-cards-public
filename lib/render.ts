@@ -10,15 +10,16 @@ export async function renderCardPng(el: ReactElement, width: number, height: num
 }
 
 /** The scraper-facing PNG response for the /og routes. */
-export async function renderCard(el: ReactElement, width: number, height: number) {
+export async function renderCard(el: ReactElement, width: number, height: number, cacheSeconds = 120) {
   const { png, source } = await renderCardPng(el, width, height);
   return new Response(new Uint8Array(png), {
     status: 200,
     headers: {
       "Content-Type": "image/png",
       "Content-Length": String(png.length),
-      // Link previews: the CDN keeps a copy for 2 minutes and may serve it 1 more minute while refreshing.
-      "Cache-Control": "public, max-age=120, s-maxage=120, stale-while-revalidate=60",
+      // Link previews: the CDN keeps a copy for 2 minutes and may serve it 1 more minute while refreshing. A card that
+      // is missing a figure (a cold wallet's APR) asks for a shorter hold so the complete one replaces it soon.
+      "Cache-Control": `public, max-age=${cacheSeconds}, s-maxage=${cacheSeconds}, stale-while-revalidate=60`,
       "X-Card-Fonts": source,
     },
   });

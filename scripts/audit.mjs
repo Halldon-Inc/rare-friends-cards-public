@@ -191,7 +191,7 @@ for (const w of wallets) {
   };
   for (const k of Object.keys(exp)) check(k, got[k]?.v ?? "(missing)", exp[k], exact && !/[$%]/.test(exp[k]) ? true : exact);
   check("Claimable sub", got.Claimable?.sub ?? "(missing)", `${num(claimRf, 2)} RF + ${num(claimWeth, 5)} WETH`, false);
-  check("Your APR sub", got["Your APR"]?.sub ?? "(missing)", apy != null ? "current active stream ÷ RF you paid to activate · annualized" : a.activationPaidUnknown ? "activation history unavailable right now" : `no RF paid to activate · protocol APR ${p.metrics.rewardApy > 0 ? `${num(p.metrics.rewardApy, 0)}%` : "—"}`, true);
+  check("Your APR sub", got["Your APR"]?.sub ?? "(missing)", apy != null ? "current active stream ÷ RF you paid to activate · annualized" : a.activationPaidUnknown ? "reading the activation history…" : `no RF paid to activate · protocol APR ${p.metrics.rewardApy > 0 ? `${num(p.metrics.rewardApy, 0)}%` : "—"}`, true);
   // The page renders its card inline from the same snapshot as the strip (a data URI), so the two cannot disagree.
   check("card embedded inline", /class="card" src="data:image\/png;base64,[A-Za-z0-9+/]{1000,}/.test(html) ? "inline png" : "(missing)", "inline png", true);
   check("download button present", /\[ download png \]/.test(html) ? "present" : "(missing)", "present", true);

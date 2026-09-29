@@ -91,14 +91,20 @@ const LOG_ATTEMPT_MS = 15_000;
  * and on 250k slices of 64.85M to 65.35M, but answered every 62.5k slice there in under a second.
  */
 const LOG_MIN_SPLIT = 31_250n;
+/**
+ * A range an endpoint calls too dense is read in this many parts, chain RPC first. Measured 2026-09-29 on 64.1M to
+ * 65.1M: the chain RPC answers each 62.5k slice in about 75 ms but times out at 1M, 500k and 250k, and globalstake
+ * takes 2 to 11 s per 125k slice there. Halving paid a 2 s timeout per level and outran a cold card's budget.
+ */
+const LOG_DENSE_PARTS = 16n;
+/** Ranges already found too dense in this process: read in parts straight away instead of timing out first. */
+const denseRanges = new Set<string>();
 /** An endpoint's answer that the range holds too many logs to scan in time: the range is split, not retried. */
 const DENSE_RANGE = /log query timed out|query timeout|query returned more than|too many (results|logs)|block range too large|range is too large/i;
 /** The chain RPC answers 429 to bursts (a cold card reads a dozen chunks at once): back off and ask the same endpoint again, at most this many times. */
 const RATE_LIMITED = /429|too many requests/i;
 const LOG_429_RETRIES = 2;
 const LOG_429_BACKOFF_MS = 600;
-/** Most the card waits for the activation history; after that it prints "activation history unavailable right now". */
-const PAID_BUDGET_MS = 5_000;
 /** Most the card waits for portraits: those that arrived are attached, the rest render the placeholder. */
 const ART_BUDGET_MS = 2_000;
 
@@ -472,12 +478,13 @@ async function chunkPaidOnRaw(url: string, holder: Address, from: bigint, to: bi
 /**
  * One chunk from the first log endpoint that answers. The next endpoint starts when the current one fails or has been
  * silent for LOG_HEDGE_MS; the first success wins and aborts the rest. An endpoint that reports the range too dense
- * settles it too: the range is split in half and each half read the same way, one after the other (the chain RPC
- * answers 429 to bursts), down to LOG_MIN_SPLIT. A 429 is retried on the same endpoint after a short backoff (at most
+ * settles it too: the range is split into LOG_DENSE_PARTS parts, each read the same way but chain RPC first, one
+ * after the other (the chain RPC answers 429 to bursts), down to LOG_MIN_SPLIT; the range is remembered as dense. A 429 is retried on the same endpoint after a short backoff (at most
  * LOG_429_RETRIES times). Rejects only when every endpoint failed and none is waiting to retry.
  */
-function hedgedChunkPaid(holder: Address, from: bigint, to: bigint): Promise<bigint> {
-  const urls = [...new Set([envRpc(), ...LOG_RPCS].filter((u): u is string => !!u))];
+function hedgedChunkPaid(holder: Address, from: bigint, to: bigint, chainFirst = false): Promise<bigint> {
+  if (denseRanges.has(`${from}-${to}`)) return densePaid(holder, from, to);
+  const urls = [...new Set([envRpc(), ...(chainFirst ? [RPC_URL, ...LOG_RPCS] : LOG_RPCS)].filter((u): u is string => !!u))];
   return new Promise((resolve, reject) => {
     const stop = new AbortController();
     const errors: string[] = [];
@@ -507,11 +514,8 @@ function hedgedChunkPaid(holder: Address, from: bigint, to: bigint): Promise<big
           if (settled) return;
           if (DENSE_RANGE.test(message) && to - from + 1n > LOG_MIN_SPLIT) {
             finish();
-            const mid = from + (to - from) / 2n;
-            note({ stage: "logs", method: `split ${from}-${to}`, ms: 0, ok: true, note: "range too dense for one query: reading it in halves" });
-            hedgedChunkPaid(holder, from, mid)
-              .then((a) => hedgedChunkPaid(holder, mid + 1n, to).then((b) => a + b))
-              .then(resolve, reject);
+            denseRanges.add(`${from}-${to}`);
+            densePaid(holder, from, to).then(resolve, reject);
             return;
           }
           const tried = retries.get(url) ?? 0;
@@ -540,6 +544,16 @@ function hedgedChunkPaid(holder: Address, from: bigint, to: bigint): Promise<big
     };
     launch();
   });
+}
+
+/** A dense range in LOG_DENSE_PARTS parts (never below LOG_MIN_SPLIT), one after the other, chain RPC first. */
+async function densePaid(holder: Address, from: bigint, to: bigint): Promise<bigint> {
+  const size = to - from + 1n;
+  const part = size / LOG_DENSE_PARTS > LOG_MIN_SPLIT ? size / LOG_DENSE_PARTS : LOG_MIN_SPLIT;
+  note({ stage: "logs", method: `split ${from}-${to}`, ms: 0, ok: true, note: `range too dense for one query: reading it in parts of ${part} blocks` });
+  let sum = 0n;
+  for (let a = from; a <= to; a += part) sum += await hedgedChunkPaid(holder, a, a + part - 1n < to ? a + part - 1n : to, true);
+  return sum;
 }
 
 /**
@@ -605,6 +619,29 @@ async function readActivationPaid(address: Address, head: bigint, budgetMs: numb
   }
 }
 
+/**
+ * A state assembled before its activation history arrived (`activationPaidUnknown`): waits up to `budgetMs` more on
+ * the same history read, whose chunks are still in flight and shared through the caches above, and returns a copy
+ * with the total filled in. Null when it is still unknown; the caller keeps the state it had.
+ */
+export async function fillActivationPaid(raw: Raw, budgetMs: number): Promise<Raw | null> {
+  const acct = raw?.account;
+  if (!acct?.activationPaidUnknown || budgetMs <= 0 || typeof acct.address !== "string" || !/^[0-9]+$/.test(String(raw.blockNumber))) return null;
+  const paid = await readActivationPaid(getAddress(acct.address), BigInt(raw.blockNumber), budgetMs);
+  if (paid == null) return null;
+  return { ...raw, account: { ...acct, activationPaid: units(paid), activationPaidUnknown: false } };
+}
+
+/**
+ * A wallet's activation total at the current head, waiting up to `budgetMs`: the history's own route, which a cold
+ * card page calls from the browser so a slow history finishes (and lands in the caches) outside the page's budget.
+ */
+export async function readActivationPaidNow(address: string, budgetMs: number): Promise<number | null> {
+  const head = await reads.getBlockNumber({ cacheTime: 0 });
+  const paid = await readActivationPaid(getAddress(address), head, budgetMs);
+  return paid == null ? null : units(paid);
+}
+
 /** Their `rewardApyPercent` on their published totals: this week's active budgets, priced, over all RF ever paid to activate, annualized. */
 function protocolApr(totalPaid: bigint | null, snapshot: Snapshot, nowMs: number): number {
   if (totalPaid == null || totalPaid <= 0n) return 0;
@@ -632,22 +669,27 @@ async function assembleTraced(addr: Address, timeoutMs: number): Promise<Raw> {
   const run = async () => {
     // `eth_blockNumber` is served by every transport (their proxy refuses `eth_getBlockByNumber`); blocks are 100 ms
     // apart, so the wall clock is the block time for every purpose here (freshness, stream end, APR).
+    const head = step("block", () => reads.getBlockNumber({ cacheTime: 0 }), (b) => String(b));
+    // The activation history is the slowest read and needs only the head, so it starts as soon as the head is known
+    // and runs alongside the snapshot, the Friend list and the position reads. It used to start after the positions,
+    // which on a wallet of 400 Friends left it a second or two and printed "activation history unavailable".
+    const paidRead = head.then((b) => readActivationPaid(addr, b, Math.max(0, timeoutMs - (Date.now() - started) - 1_000)), () => null);
     const [snapshot, owned, block, totalPaid] = await Promise.all([
       step("snapshot", () => readSnapshot(6_000)),
       step("owned-nfts", () => readOwned(addr, 8_000), (o) => `${o.length} Friends`),
-      step("block", () => reads.getBlockNumber({ cacheTime: 0 }), (b) => String(b)),
+      head,
       readTotalsPaid(4_000),
     ]);
     const nowMs = Date.now();
     const positions = await step("positions", () => readPositions(owned, block));
     const hardwired = positions.filter((p): p is Position & { wallet: Address } => p.hardwired && p.wallet !== null);
-    // The soft reads get what is left of the caller's budget, less a second to build the state, so a slow log index or
-    // portrait render degrades to "history unavailable" or a placeholder instead of failing the whole card.
-    const soft = Math.max(0, Math.min(PAID_BUDGET_MS, timeoutMs - (Date.now() - started) - 1_000));
+    // Portraits get what is left of the caller's budget, less a second to build the state, so a slow portrait render
+    // degrades to a placeholder instead of failing the whole card. The history already has its own deadline.
+    const soft = Math.max(0, Math.min(ART_BUDGET_MS, timeoutMs - (Date.now() - started) - 1_000));
     const [balances, paid, art] = await Promise.all([
       step("balances", () => readBalances(hardwired.map((p) => p.wallet), block)),
-      readActivationPaid(addr, block, soft),
-      readArtwork([...positions.filter((p) => p.activated), ...positions.filter((p) => !p.activated)].map((p) => p.owned), block, Math.min(ART_BUDGET_MS, soft)),
+      paidRead,
+      readArtwork([...positions.filter((p) => p.activated), ...positions.filter((p) => !p.activated)].map((p) => p.owned), block, soft),
     ]);
     const balanceOf = new Map(hardwired.map((p, i) => [p.wallet, balances[i]]));
     const { ethUsd, rfUsd } = snapshot.prices;

@@ -4,7 +4,7 @@ import { normalize } from "viem/ens";
 import { cache } from "react";
 import { unstable_cache } from "next/cache";
 import { after } from "next/server";
-import { assembleState, errText, friendArtwork, newTrace } from "./upstream";
+import { assembleState, errText, fillActivationPaid, friendArtwork, newTrace } from "./upstream";
 
 // The data is assembled from rarefriends.com's remaining public routes plus Robinhood Chain reads: lib/upstream.ts says
 // why (their per-wallet state endpoint was retired on 2026-09-25) and lists every route and address involved.
@@ -239,15 +239,38 @@ function remember(address: string, j: Raw) {
  *    bypassing every cache, with quick retries: the API returns transient 502s ("chain request could not be
  *    completed") a few percent of the time, half the time on bad nights.
  * 4. If every read fails and an older snapshot exists, render it flagged `cached` with its age, so the card says so.
+ * 5. `historyMs`: when the state arrived without the wallet's activation history (a cold read ran out of time), wait
+ *    for that history until `historyMs` after the call started, so the portfolio shows its APR on the first view.
  * Null means "do not render". Memoised per request so metadata and page share one call.
  */
-export const fetchState = cache(async (address: string): Promise<State | null> => {
+export const fetchState = cache(async (address: string, historyMs = 0): Promise<State | null> => {
+  const t0 = Date.now();
+  const got = await pickState(address);
+  if (!got) return null;
+  if (historyMs > 0 && got.json.account?.activationPaidUnknown) {
+    const filled = await fillActivationPaid(got.json, historyMs - (Date.now() - t0)).catch(() => null);
+    if (filled) {
+      if (!got.cached) remember(address, filled);
+      return build(filled, got.cached);
+    }
+    // Still reading: keep the function alive after the response until the history lands, so its sealed chunks reach
+    // the shared cache and the next view (the page asks for itself again) has it. Unawaited work may be frozen.
+    try {
+      after(() => fillActivationPaid(got.json, 20_000).then((f) => { if (f && !got.cached) remember(address, f); }, () => {}));
+    } catch {
+      // Outside a request scope (tests, scripts).
+    }
+  }
+  return build(got.json, got.cached);
+});
+
+async function pickState(address: string): Promise<{ json: Raw; cached: boolean } | null> {
   const held = memo.get(address.toLowerCase());
-  if (held && ageMs(held) < FRESH_MS) return build(held, false);
+  if (held && ageMs(held) < FRESH_MS) return { json: held, cached: false };
   const shared = await readState(address, true, 8_000);
   if (shared.json && ageMs(shared.json) < FRESH_MS) {
     remember(address, shared.json);
-    return build(shared.json, false);
+    return { json: shared.json, cached: false };
   }
   let fresh: Read = { json: null, hung: shared.hung };
   // If the upstream is hanging rather than failing fast, do not stack more long waits on top.
@@ -265,12 +288,12 @@ export const fetchState = cache(async (address: string): Promise<State | null> =
     } catch {
       // Outside a request scope (tests, scripts): skip the seed.
     }
-    return build(fresh.json, false);
+    return { json: fresh.json, cached: false };
   }
   const fallback = [held, shared.json].filter((x): x is Raw => !!x).sort((a, b) => ageMs(a) - ageMs(b))[0];
   console.warn(JSON.stringify({ tag: "rf-state", wallet: address, stage: "fetch", ok: false, outcome: fallback ? `cached copy, ${Math.round(ageMs(fallback) / 1000)} s old` : "data unavailable", sharedHung: shared.hung, freshHung: fresh.hung }));
-  return fallback ? build(fallback, true) : null;
-});
+  return fallback ? { json: fallback, cached: true } : null;
+}
 
 /**
  * For /api/diag/state: one fresh assembly (no cache of any kind in front of it) with every stage timed, the refusal
