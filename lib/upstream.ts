@@ -260,17 +260,73 @@ async function readJson(stage: string, url: string, timeoutMs: number): Promise<
 }
 
 /** `/api/protocol/snapshot`: `{ prices{ethUsd, rfUsd}, metrics{genesisWeight, generationsWeight}, streams[{asset, end, budget, pending, remaining}] }`. */
-async function readSnapshot(timeoutMs: number): Promise<Snapshot> {
+async function readSnapshotLive(timeoutMs: number): Promise<Snapshot> {
   const j = await readJson("snapshot", SNAPSHOT_API, timeoutMs);
   if (!isObj(j) || !isObj(j.prices) || !isObj(j.metrics) || !Array.isArray(j.streams)) throw new UpstreamError("snapshot: unexpected shape");
   const { ethUsd, rfUsd } = j.prices;
   const { genesisWeight, generationsWeight } = j.metrics;
-  if (!finite(ethUsd) || !finite(rfUsd) || !finite(genesisWeight) || !finite(generationsWeight)) throw new UpstreamError("snapshot: prices or weights missing");
+  const missing = Object.entries({ ethUsd, rfUsd, genesisWeight, generationsWeight }).filter(([, v]) => !finite(v)).map(([k, v]) => `${k}=${v === null ? "null" : typeof v}`);
+  if (missing.length) throw new UpstreamError(`snapshot: prices or weights missing (${missing.join(", ")})`);
   const streams = j.streams.map((s: unknown): Stream => {
     if (!isObj(s) || (s.asset !== "RF" && s.asset !== "WETH") || !finite(s.end) || !finite(s.budget) || !finite(s.pending) || !finite(s.remaining)) throw new UpstreamError("snapshot: unexpected stream");
     return { asset: s.asset, end: s.end, budget: s.budget, pending: s.pending, remaining: s.remaining };
   });
   return { prices: { ethUsd, rfUsd }, metrics: { genesisWeight, generationsWeight }, streams };
+}
+
+/**
+ * Their snapshot route sometimes answers 200 with a price or weight set to null for a minute or more (seen
+ * 2026-10-01 01:29Z and 02:31Z: every card and PNG refused, so the uptime probe failed twice running). The last
+ * complete snapshot is held per instance and, in one-minute buckets, in Next's Data Cache so a cold instance has it
+ * too. A bad answer falls back to a held copy at most SNAPSHOT_GRACE_MS old; older than that the card still refuses,
+ * because a stale price printed as current is worse than "data unavailable".
+ */
+const SNAPSHOT_GRACE_MS = 10 * 60_000;
+const BUCKET_MS = 60_000;
+type HeldSnapshot = { at: number; snapshot: Snapshot };
+let lastGood: HeldSnapshot | null = null;
+const bucketOf = (ms: number) => String(Math.floor(ms / BUCKET_MS));
+// A miss throws (so nothing is stored) unless this instance holds a snapshot from that same minute, which is the write.
+const heldShared = unstable_cache(
+  async (bucket: string): Promise<HeldSnapshot> => {
+    const held = lastGood;
+    if (!held || bucketOf(held.at) !== bucket) throw new UpstreamError("no held snapshot");
+    return held;
+  },
+  ["rf-snapshot-held-v1"],
+  { revalidate: false }
+);
+
+async function holdSnapshot(snapshot: Snapshot) {
+  lastGood = { at: Date.now(), snapshot };
+  await heldShared(bucketOf(lastGood.at)).catch(() => {}); // outside Next (scripts) there is no shared cache
+}
+
+async function heldSnapshot(): Promise<HeldSnapshot | null> {
+  const now = Date.now();
+  if (lastGood && now - lastGood.at <= SNAPSHOT_GRACE_MS) return lastGood;
+  for (let t = now; now - t <= SNAPSHOT_GRACE_MS; t -= BUCKET_MS) {
+    const held = await heldShared(bucketOf(t)).catch(() => null);
+    if (held && now - held.at <= SNAPSHOT_GRACE_MS) return held;
+  }
+  return null;
+}
+
+export async function readSnapshot(timeoutMs: number): Promise<Snapshot> {
+  try {
+    const snapshot = await readSnapshotLive(timeoutMs);
+    await holdSnapshot(snapshot);
+    return snapshot;
+  } catch (e) {
+    // Only a bad answer falls back; a hung or unreachable route is a real outage and stays one.
+    if (!(e instanceof UpstreamError)) throw e;
+    const held = await heldSnapshot();
+    if (!held) throw e;
+    const age = `using a held snapshot ${Math.round((Date.now() - held.at) / 1000)} s old`;
+    note({ stage: "snapshot-held", ms: 0, ok: true, note: age });
+    console.warn(JSON.stringify({ tag: "rf-state", wallet: traceStore.getStore()?.wallet, stage: "snapshot-held", ok: true, note: age, error: errText(e) }));
+    return held.snapshot;
+  }
 }
 
 /** `/api/protocol/owned-nfts?address=`: `{ nfts: [{ collection: "Genesis" | "Generations", id: "354" }] }`, validated the way their client does. */
