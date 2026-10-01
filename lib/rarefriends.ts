@@ -159,8 +159,17 @@ const SHARED_S = 30;
 type Raw = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 type Read = { json: Raw | null; hung: boolean };
 
-/** The shared 30 s snapshot: everyone asking for the same wallet inside the window gets one identical read (Next's Data Cache, which survives deploys). A failed assembly throws and is never stored. */
-const sharedState = unstable_cache(async (address: string) => assembleState(address, 8_000), ["rf-state-v3"], { revalidate: SHARED_S });
+/**
+ * The shared 30 s snapshot: everyone asking for the same wallet inside the window gets one identical read (Next's Data
+ * Cache, which survives deploys). A failed assembly throws and is never stored.
+ *
+ * It carries no activation history (activationPaidUnknown); fetchState fills that in. Next skips the cache READ of
+ * an unstable_cache nested inside another one (next 15.5 unstable-cache.js, "when we are nested inside of other
+ * unstable_cache's we should bypass cache"), so history read in here never saw the day-long sealed-chunk cache: every
+ * cold instance re-read the whole history live, and the in-process memo handed that live read to the fill as well.
+ * With the chain RPC answering 429 and globalstake slow on old blocks, the cards printed no APR (uptime run 2026-10-01 18:30Z).
+ */
+const sharedState = unstable_cache(async (address: string) => assembleState(address, 8_000, undefined, { history: false }), ["rf-state-v4"], { revalidate: SHARED_S });
 
 /**
  * One upstream read: the state assembled in lib/upstream.ts from their snapshot and owned-nfts routes plus chain

@@ -715,12 +715,12 @@ const safeId = (id: bigint) => (id <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(i
  * whole read outruns `timeoutMs`. Portraits and the activation history are soft: a missing portrait is a placeholder,
  * an unknown activation total is flagged `activationPaidUnknown`.
  */
-export async function assembleState(address: string, timeoutMs: number, trace?: Trace): Promise<Raw> {
+export async function assembleState(address: string, timeoutMs: number, trace?: Trace, opts: { history?: boolean } = {}): Promise<Raw> {
   const addr = getAddress(address);
   const t = trace ?? newTrace(addr);
-  return traceStore.run(t, () => assembleTraced(addr, timeoutMs));
+  return traceStore.run(t, () => assembleTraced(addr, timeoutMs, opts.history !== false));
 }
-async function assembleTraced(addr: Address, timeoutMs: number): Promise<Raw> {
+async function assembleTraced(addr: Address, timeoutMs: number, history: boolean): Promise<Raw> {
   const started = Date.now();
   const run = async () => {
     // `eth_blockNumber` is served by every transport (their proxy refuses `eth_getBlockByNumber`); blocks are 100 ms
@@ -729,7 +729,8 @@ async function assembleTraced(addr: Address, timeoutMs: number): Promise<Raw> {
     // The activation history is the slowest read and needs only the head, so it starts as soon as the head is known
     // and runs alongside the snapshot, the Friend list and the position reads. It used to start after the positions,
     // which on a wallet of 400 Friends left it a second or two and printed "activation history unavailable".
-    const paidRead = head.then((b) => readActivationPaid(addr, b, Math.max(0, timeoutMs - (Date.now() - started) - 1_000)), () => null);
+    // Without `history` the total is left unknown for the caller to fill (see sharedState in lib/rarefriends.ts).
+    const paidRead = history ? head.then((b) => readActivationPaid(addr, b, Math.max(0, timeoutMs - (Date.now() - started) - 1_000)), () => null) : Promise.resolve(null);
     const [snapshot, owned, block, totalPaid] = await Promise.all([
       step("snapshot", () => readSnapshot(6_000)),
       step("owned-nfts", () => readOwned(addr, 8_000), (o) => `${o.length} Friends`),
